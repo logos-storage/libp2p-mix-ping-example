@@ -1,21 +1,20 @@
-# SPDX-License-Identifier: Apache-2.0 OR MIT
-# Copyright (c) Status Research & Development GmbH
+# SPDX-License-Identifier: MIT
 
-## Mix Protocol Ping Example
+## Mix Protocol Ping Example with TCP Transport
 ##
 ## This example demonstrates using the Mix protocol with the Ping protocol.
 ## It creates a set of mix nodes that form an anonymous overlay network,
 ## then sends a ping through the mix network to a destination node and
 ## receives the response via Single Use Reply Blocks (SURBs).
+## This example uses TCP transport for all nodes.
 
 {.used.}
 
 import chronicles, chronos, results
-import std/[strformat, sequtils]
+import std/[sequtils, sugar]
 import libp2p/[
     protocols/mix,
     protocols/mix/mix_protocol,
-    protocols/mix/curve25519,
     protocols/ping,
     peerid,
     multiaddress,
@@ -40,23 +39,46 @@ proc mixPingSimulation() {.async: (raises: [Exception]).} =
   var switches: seq[Switch] = @[]
   var mixProtos: seq[MixProtocol] = @[]
 
-  # Set up mix protocols on each mix node
+  # Start switches first so wildcard listen addresses are resolved to dialable addresses.
   for nodeInfo in mixNodeInfos:
     var switch = createSwitch(nodeInfo.multiAddr, Opt.some(nodeInfo.libp2pPrivKey))
+    await switch.start()
+    info "Mix node switch",
+      peerId = switch.peerInfo.peerId,
+      addrs = switch.peerInfo.addrs,
+      listenAddrs = switch.peerInfo.listenAddrs
+
+    switches.add(switch)
+  
+  defer:
+    await switches.mapIt(it.stop()).allFutures()
+
+  let resolvedInfos = collect:
+    for i, nodeInfo in mixNodeInfos:
+      initMixNodeInfo(
+        nodeInfo.peerId,
+        switches[i].peerInfo.addrs[0],
+        nodeInfo.mixPubKey,
+        nodeInfo.mixPrivKey,
+        nodeInfo.libp2pPubKey,
+        nodeInfo.libp2pPrivKey,
+      )
+  
+  # Mount Mix protocols using the resolved, dialable node addresses.
+  for i, nodeInfo in resolvedInfos:
+    var switch = switches[i]
     let proto = MixProtocol.new(nodeInfo, switch)
 
+    await proto.start()
+
     # Populate nodePool with all other nodes' public info
-    proto.nodePool.add(mixNodeInfos.includeAllExcept(nodeInfo))
+    proto.nodePool.add(resolvedInfos.includeAllExcept(nodeInfo))
 
     # Register how to read ping responses (32 bytes exactly)
     proto.registerDestReadBehavior(PingCodec, readExactly(32))
     switch.mount(proto)
 
-    switches.add(switch)
     mixProtos.add(proto)
-
-  defer:
-    await switches.mapIt(it.stop()).allFutures()
 
   # Create a destination node (not part of the mix network)
   let destNode = createSwitch(MultiAddress.init("/ip4/0.0.0.0/tcp/0").tryGet())
@@ -66,8 +88,7 @@ proc mixPingSimulation() {.async: (raises: [Exception]).} =
   let pingProto = Ping.new()
   destNode.mount(pingProto)
 
-  # Start all switches
-  await switches.mapIt(it.start()).allFutures()
+  # Start destination switch after mounting Ping.
   await destNode.start()
 
   # Pick sender (first mix node) and send ping through the mix network

@@ -1,4 +1,4 @@
-mix_ping
+mix_ping_tcp
 mix_ping_quic
 nimcache/
 nimbledeps/
