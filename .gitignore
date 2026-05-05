@@ -1,5 +1,6 @@
 mix_ping_tcp
 mix_ping_quic
+multiple_transports_example
 nimcache/
 nimbledeps/
 .agents/
